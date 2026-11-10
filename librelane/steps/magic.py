@@ -64,7 +64,9 @@ class MagicOutputProcessor(OutputProcessor):
         for rx in [
             r"DEF read.*\(Error\).*",
             r"LEF read.*\(Error\).*",
-            r"Error while reading cell(?!.*Warning:).*",
+            # sky130_fd_io.gds carries a polygon in sky130_fd_io__overlay_vddio_lvc that Magic reports as an unclosed boundary
+            # (a cell the design may never instantiate); Magic skips the polygon and continues.
+            r"Error while reading cell(?!.*Warning:)(?!.*Boundary is not closed).*",
             r".*Calma output error.*",
             r".*is an abstract view.*",
         ]
