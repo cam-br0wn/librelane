@@ -2480,6 +2480,24 @@ class CTS(OpenROADStep):
                 default=0,
                 units="µm",
             ),
+            # Three variables, each inert when unset (stock behaviour)
+            Variable(
+                "CTS_ROOT_CHAIN_PIN",
+                Optional[str],
+                "LIBRELANE_DEV: '<instance>/<pin>' of a clock source. When set, a chain of CTS_ROOT_BUFFER cells is inserted between that pin and its net before clock tree synthesis, at equal steps on the straight line from the pin to the centre of the bounding box of the net's sinks, so the root's repeaters are common to every tree and inside what the latency balancer measures.",
+            ),
+            Variable(
+                "CTS_ROOT_CHAIN_MAX_SEGMENT",
+                Decimal,
+                "LIBRELANE_DEV: the longest segment of the CTS_ROOT_CHAIN_PIN chain; sets the number of buffers.",
+                default=650,
+                units="µm",
+            ),
+            Variable(
+                "CTS_CLK_REPAIR_DRIVERS_RX",
+                Optional[str],
+                "LIBRELANE_DEV: a Tcl regular expression on driver instance names. When set, the post-CTS repair_clock_nets works only on clock nets whose driver matches; every other clock net is marked special in odb for the duration of the call (the only exclusion OpenROAD's clock-net repair honours) and unmarked after it.",
+            ),
             Variable(
                 "CTS_DISABLE_POST_PROCESSING",
                 bool,
