@@ -336,9 +336,12 @@ proc read_pnr_libs {args} {
         lappend corner_names $corner_name
     }
 
-    define_corners {*}[array name corner]
+    # Read the corners' libraries in the step's order (_LIB_CORNER_0..N = RSZ_CORNERS / PNR_CORNERS /
+    # CTS_CORNERS as configured), not in Tcl's hash order of `array name`. What matters is the read_liberty loop below:
+    # the first library read supplies the linked liberty cells the resizer sizes from. define_corners sorts by name.
+    define_corners {*}$corner_names
 
-    foreach corner_name [array name corner] {
+    foreach corner_name $corner_names {
         puts "Reading timing models for corner $corner_name…"
 
         set corner_models $corner($corner_name)
