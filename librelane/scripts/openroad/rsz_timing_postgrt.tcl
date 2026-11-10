@@ -30,6 +30,15 @@ source $::env(SCRIPTS_DIR)/openroad/common/grt.tcl
 # }
 estimate_parasitics -global_routing
 
+# ORFS recipe. Open an incremental global-routing session here so that every net the
+# repairs or the re-legalisation touch is marked dirty and re-routed at -end_incremental. The stock
+# script re-ran a plain global_route afterwards, which left ~1000 nets without a route (EST-0026) and
+# detailed routing broke (DRT-0206) once repair_timing inserted 27 hold buffers.
+puts "LIBRELANE_DEV: rsz_timing_postgrt incremental global_route"
+if { $::env(GRT_RESIZER_RUN_GRT) } {
+    global_route -start_incremental
+}
+
 # Resize
 set setup_args [list]
 lappend setup_args -verbose
@@ -64,7 +73,12 @@ if { $::env(GRT_RESIZER_FIX_HOLD_FIRST) == 1 } {
 source $::env(SCRIPTS_DIR)/openroad/common/dpl.tcl
 unset_dont_touch_objects
 if { $::env(GRT_RESIZER_RUN_GRT) } {
-    source $::env(SCRIPTS_DIR)/openroad/common/grt.tcl
+    set arg_list [list]
+    lappend arg_list -congestion_iterations $::env(GRT_OVERFLOW_ITERS)
+    lappend arg_list -verbose
+    append_if_flag arg_list GRT_ALLOW_CONGESTION -allow_congestion
+    log_cmd global_route -end_incremental {*}$arg_list
+    write_guide $::env(STEP_DIR)/after_grt.guide
 }
 
 
