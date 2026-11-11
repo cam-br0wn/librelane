@@ -246,13 +246,28 @@ MetricsUpdate = Dict[str, Any]
 
 
 class ProcessStatsThread(Thread):
-    def __init__(self, process: psutil.Popen, interval: float = 0.1):
+    def __init__(
+        self,
+        process: psutil.Popen,
+        interval: float = 0.1,
+        live_path: Optional[str] = None,
+        live_interval: float = 15.0,
+    ):
         Thread.__init__(
             self,
         )
         self.process = process
         self.result = None
         self.interval = interval
+        # The peak over the process and its children (a wrapper script, Magic's Tcl
+        # child, per-corner workers) in bytes, and a heartbeat file rewritten every live_interval seconds
+        # so that a step killed with its whole scope still leaves its last known footprint on disk.
+        self.live_path = live_path
+        self.live_interval = live_interval
+        self.peak_tree_rss = 0
+        self.last_tree_rss = 0
+        self.last_output = time.time()
+        self.lines = 0
         self.time = {
             "cpu_time_user": 0.0,
             "cpu_time_system": 0.0,
@@ -299,6 +314,24 @@ class ProcessStatsThread(Thread):
                     current["memory_vms"] = memory.vms
                     current["threads"] = threads
 
+                    tree_rss = memory.rss
+                    if count % 10 == 1:  # once a second: the children are a /proc walk
+                        try:
+                            for child in self.process.children(recursive=True):
+                                try:
+                                    tree_rss += child.memory_info().rss
+                                except psutil.Error:
+                                    pass
+                        except psutil.Error:
+                            pass
+                        self.last_tree_rss = tree_rss
+                        self.peak_tree_rss = max(self.peak_tree_rss, tree_rss)
+                    self.peak_tree_rss = max(self.peak_tree_rss, memory.rss)
+                    if self.live_path is not None and (
+                        count == 1 or time.time() - self._last_live >= self.live_interval
+                    ):
+                        self._write_live(runtime.total_seconds(), cpu_time)
+
                     for key in self.peak_resources.keys():
                         self.peak_resources[key] = max(
                             current[key], self.peak_resources[key]
@@ -319,8 +352,36 @@ class ProcessStatsThread(Thread):
                     return
             warn(f"Process resource tracker encountered an error: {e}")
 
+    _last_live = 0.0
+
+    def _write_live(self, runtime_s: float, cpu_time):
+        self._last_live = time.time()
+        try:
+            tmp = f"{self.live_path}.tmp"
+            with open(tmp, "w") as f:
+                json.dump(
+                    {
+                        "pid": self.process.pid,
+                        "t": datetime.datetime.now().isoformat(timespec="seconds"),
+                        "runtime_s": round(runtime_s, 1),
+                        "cpu_user_s": round(cpu_time.user, 1),
+                        "cpu_system_s": round(cpu_time.system, 1),
+                        "rss_tree_bytes": int(self.last_tree_rss),
+                        "peak_rss_tree_bytes": int(self.peak_tree_rss),
+                        "log_lines": self.lines,
+                        "silent_s": round(time.time() - self.last_output, 1),
+                    },
+                    f,
+                )
+            os.replace(tmp, self.live_path)
+        except OSError:
+            pass
+
     def stats_as_dict(self):
         return {
+            "peak_rss_tree_bytes": int(self.peak_tree_rss),
+            "peak_rss_bytes": int(self.peak_resources["memory_rss"]),
+            "runtime_s": self.time["runtime"],
             "time": {k: format_elapsed_time(self.time[k]) for k in self.time},
             "peak_resources": {
                 k: (
@@ -1286,7 +1347,12 @@ class Step(ABC):
         mkdirp(report_dir)
 
         log_path = log_to or self.get_log_path()
-        log_file = open(log_path, "w")
+        # Line-buffered. The default 8 KiB block buffer can hold a long
+        # step's progress lines in memory until the step ends.
+        log_file = open(log_path, "w", buffering=1)
+        log_base = os.path.splitext(log_path)[0]
+        # <log>.times: "<seconds since start> <line number>" at most once a second, to date any log line
+        times_file = open(f"{log_base}.times", "w", buffering=1)
         cmd_str = [str(arg) for arg in cmd]
 
         with open(os.path.join(self.step_dir, "COMMANDS"), "a+") as f:
@@ -1344,14 +1410,26 @@ class Step(ABC):
             **kwargs,
         )
 
-        process_stats_thread = ProcessStatsThread(process)
+        process_stats_thread = ProcessStatsThread(
+            process, live_path=f"{log_base}.live.json"
+        )
         process_stats_thread.start()
+        t_start = time.time()
+        t_stamp = -1.0
 
         line_buffer = RingBuffer(str, 10)
         if process_stdout := process.stdout:
             try:
                 for line in process_stdout:
                     log_file.write(line)
+                    now = time.time()
+                    process_stats_thread.lines += 1
+                    process_stats_thread.last_output = now
+                    if now - t_stamp >= 1.0:
+                        t_stamp = now
+                        times_file.write(
+                            f"{now - t_start:.1f} {process_stats_thread.lines}\n"
+                        )
                     line_buffer.push(line)
                     for processor in output_processors:
                         if processor.process_line(line):
@@ -1372,6 +1450,52 @@ class Step(ABC):
         result: Dict[str, Any] = {}
         returncode = process.wait()
         log_file.close()
+        times_file.write(f"{time.time() - t_start:.1f} {process_stats_thread.lines} end\n")
+        times_file.close()
+        try:
+            os.remove(f"{log_base}.live.json")
+        except OSError:
+            pass
+        peak_gib = process_stats_thread.peak_tree_rss / 2**30
+        if ledger := os.getenv("LIBRELANE_STEP_LEDGER"):
+            # one line per subprocess, appended: what the next launch reads to admit this step
+            # (subprocesses of one step that overlap in t0..t1 ran at the same time: their peaks add)
+            try:
+                with open(ledger, "a") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "t": datetime.datetime.now().isoformat(timespec="seconds"),
+                                "design": self.config.get("DESIGN_NAME"),
+                                "step": self.id,
+                                "step_dir": os.path.abspath(self.step_dir),
+                                "log": os.path.basename(log_path),
+                                "returncode": returncode,
+                                "t0": round(t_start, 1),
+                                "t1": round(time.time(), 1),
+                                "runtime_s": round(time.time() - t_start, 1),
+                                "peak_rss_tree_bytes": int(process_stats_thread.peak_tree_rss),
+                            }
+                        )
+                        + "\n"
+                    )
+            except OSError as e:
+                self.warn(f"Could not append to the step ledger '{ledger}': {e}")
+        if returncode < 0:
+            # A signalled subprocess (the kernel's OOM killer sends SIGKILL) printed nothing here before.
+            try:
+                signame = Signals(-returncode).name
+            except ValueError:
+                signame = str(-returncode)
+            try:
+                available = psutil.virtual_memory().available / 2**30
+            except Exception:
+                available = float("nan")
+            self.err(
+                f"Subprocess killed by {signame} after {time.time() - t_start:.0f} s; its peak RSS (process tree) was {peak_gib:.2f} GiB; "
+                f"memory available now {available:.1f} GiB. A SIGKILL nobody sent is the kernel OOM killer or a scope memory limit: "
+                f"check the kernel log (journalctl -k) and the user journal (journalctl --user) at this time. Log: '{os.path.relpath(log_path)}'"
+            )
         result["returncode"] = returncode
         result["log_path"] = log_path
 
