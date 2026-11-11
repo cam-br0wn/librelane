@@ -36,7 +36,14 @@ estimate_parasitics -global_routing
 # detailed routing broke (DRT-0206) once repair_timing inserted 27 hold buffers.
 puts "LIBRELANE_DEV: rsz_timing_postgrt incremental global_route"
 if { $::env(GRT_RESIZER_RUN_GRT) } {
-    global_route -start_incremental
+    # global_route sets allow-congestion from its own flags on every call, -start_incremental included. A bare call
+    # switches it off for the whole session, and the first incremental re-route that ends with overflow inside
+    # repair_timing then stops with GRT-0232, on a design whose routing was accepted with congestion a step earlier.
+    # Pass the flag here exactly as the -end_incremental call below does.
+    set start_arg_list [list]
+    append_if_flag start_arg_list GRT_ALLOW_CONGESTION -allow_congestion
+    puts "LIBRELANE_DEV: rsz_timing_postgrt start_incremental args: $start_arg_list"
+    global_route -start_incremental {*}$start_arg_list
 }
 
 # Resize
