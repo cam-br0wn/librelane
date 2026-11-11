@@ -22,7 +22,12 @@ estimate_parasitics -placement
 
 # Clone clock tree inverters next to register loads
 # so cts does not try to buffer the inverted clocks.
+# Honour RSZ_DONT_TOUCH_RX / RSZ_DONT_TOUCH_LIST here (repair_clock_inverters skips dont-touch
+# inverters). Unpatched, it cloned the pll ring's tap inverter once per clock sink onto a ring node.
+puts "LIBRELANE_DEV: cts dont_touch around repair_clock_inverters"
+set_dont_touch_objects
 repair_clock_inverters
+unset_dont_touch_objects
 
 puts "\[INFO\] Configuring cts characterization…"
 set cts_characterization_args [list]

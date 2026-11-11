@@ -2415,6 +2415,8 @@ class CTS(OpenROADStep):
     config_vars = (
         OpenROADStep.config_vars
         + dpl_variables
+        # The don't-touch variables, so cts.tcl can protect them from repair_clock_inverters
+        + [v for v in rsz_variables if v.name in ("RSZ_DONT_TOUCH_RX", "RSZ_DONT_TOUCH_LIST")]
         + [
             # sink_buffer_max_cap_derate
             Variable(
