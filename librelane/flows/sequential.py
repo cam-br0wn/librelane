@@ -349,9 +349,38 @@ class SequentialFlow(Flow):
             for id in Filter([key]).filter(step_ids.values()):
                 gating_cvars_expanded[id] = value
 
+        # Step-scoped settings. LIBRELANE_STEP_OVERRIDES names a JSON file
+        # {"<step id>": {"<VARIABLE>": value, ...}}; the values replace the flow's for that one step
+        # (Step.__init__ passes extra keyword arguments to Config.with_increment, which re-validates
+        # them), and the step's own config.json records what it ran with. A step id that is not in
+        # the flow, or a variable the step does not read, is an error: an override that does nothing
+        # must not pass silently. Unset: stock behaviour.
+        step_overrides: Dict[str, dict] = {}
+        if overrides_path := os.getenv("LIBRELANE_STEP_OVERRIDES"):
+            import json
+
+            with open(overrides_path) as f:
+                step_overrides = json.load(f)
+            for step_id, values in step_overrides.items():
+                targets = [cls for cls in self.Steps if cls.id == step_id]
+                if len(targets) == 0:
+                    raise FlowException(
+                        f"LIBRELANE_STEP_OVERRIDES: no step with ID '{step_id}' in this flow."
+                    )
+                known = {v.name for v in targets[0].get_all_config_variables()}
+                if unread := sorted(set(values) - known):
+                    raise FlowException(
+                        f"LIBRELANE_STEP_OVERRIDES: step '{step_id}' does not read {unread}."
+                    )
+
         current_state = initial_state
         for cls in self.Steps:
-            step = cls(config=self.config, state_in=current_state)
+            overrides = step_overrides.get(cls.id, {})
+            if overrides:
+                info(
+                    f"LIBRELANE_DEV: step-scoped overrides for '{cls.id}': {sorted(overrides)}"
+                )
+            step = cls(config=self.config, state_in=current_state, **overrides)
             if frm_resolved is not None and frm_resolved == step.id:
                 executing = True
 
