@@ -130,22 +130,25 @@ def manual_global_placement(reader):
 
     data = reader.config["MANUAL_GLOBAL_PLACEMENTS"]
     not_found = []
+    # One pass over the block's instances instead of one pass per placement (the stock loop is
+    # O(placements x instances) in SWIG calls: 90-120 s for 1,728 placements on 300k instances).
+    # setdefault keeps the first instance of a name, which is the one the stock scan stopped at.
+    insts_by_name = {}
+    for inst in reader.block.getInsts():
+        insts_by_name.setdefault(inst.getName(), inst)
     for instance, info in data.items():
         name_escaped = reader.escape_verilog_name(instance)
         x, y = info["location"]
         orientation = lef_rot_to_oa_rot(info["orientation"])
-        found = False
-        for inst in reader.block.getInsts():
-            if inst.getName() == name_escaped:
-                found = True
-                x_dbu = int(x * db_units_per_micron)
-                y_dbu = int(y * db_units_per_micron)
-                inst.setOrient(lef_rot_to_oa_rot(orientation))
-                inst.setLocation(x_dbu, y_dbu)
-                inst.setPlacementStatus("PLACED")
-                break
-        if not found:
+        inst = insts_by_name.get(name_escaped)
+        if inst is None:
             not_found.append(instance)
+            continue
+        x_dbu = int(x * db_units_per_micron)
+        y_dbu = int(y * db_units_per_micron)
+        inst.setOrient(lef_rot_to_oa_rot(orientation))
+        inst.setLocation(x_dbu, y_dbu)
+        inst.setPlacementStatus("PLACED")
 
     if len(not_found):
         print(
